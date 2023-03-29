@@ -1,0 +1,6 @@
+framework module Pods_ImagesInVideo {
+  umbrella header "Pods-ImagesInVideo-umbrella.h"
+
+  export *
+  module * { export * }
+}

@@ -7,8 +7,10 @@
 
 import UIKit
 import AVKit
+import RxSwift
 
 class ViewController: UIViewController {
+    
     lazy var videoButton: UIButton = {
         let button = UIButton()
         button.setTitle("Present video", for: .normal)
@@ -63,12 +65,13 @@ class ViewController: UIViewController {
     }
     
     @objc func presentedVP() {
+        let start = Date()
         label.isHidden = false
         wave("loading", index: 0)
         videoButton.isHidden = true
         let musicURL = URL(filePath: Bundle.main.path(forResource: "music", ofType: "aac")!)
         
-        Task.init(priority: .high, operation: {
+        Task.init(priority: .userInitiated, operation: {
             let images = await ImagesProcessing().createAnArrayOfImages(array: [
                 ImageAndEffect(nameImage: "1", effect: .not),
                 ImageAndEffect(nameImage: "2", effect: .visualEffect2),
@@ -82,6 +85,7 @@ class ViewController: UIViewController {
             videoURL =  await VideoEditor().createClip(images: images!, music: musicURL)
             videoButton.isHidden = false
             label.isHidden = true
+            print(Date().timeIntervalSince(start))
         })
     }
     
@@ -105,17 +109,14 @@ class ViewController: UIViewController {
             videoButton.centerYAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerYAnchor),
         ])
     }
-       
+    
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .white
         setupView()
         layout()
     }
-
-
 }
-
 
 
 

@@ -78,7 +78,6 @@ extension UIImage {
          image.draw(in: rect)
          let newImage = UIGraphicsGetImageFromCurrentImageContext()
          UIGraphicsEndImageContext()
-         
          return newImage
      }
     

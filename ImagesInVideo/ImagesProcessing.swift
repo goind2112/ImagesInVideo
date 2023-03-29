@@ -8,11 +8,10 @@
 import Foundation
 import UIKit
 import CoreML
-import CoreImage.CIFilterBuiltins
 
 class ImagesProcessing {
     
-    private func mergeImage(_ image: UIImage, _ secondImage: UIImage?) -> UIImage {
+    func mergeImage(_ image: UIImage, _ secondImage: UIImage?) -> UIImage {
         let topImage = image
         let theSizeOfTheLargerSide = topImage.size.height < topImage.size.width ? topImage.size.width : topImage.size.height
         
@@ -33,7 +32,7 @@ class ImagesProcessing {
         return newImage
     }
     
-    private func mergeImageForVE2(_ image: UIImage, _ secondImage: UIImage) -> UIImage {
+    func mergeImageForVE2(_ image: UIImage, _ secondImage: UIImage) -> UIImage {
         let topImage = image
         let bottomImage = secondImage
         
@@ -50,7 +49,7 @@ class ImagesProcessing {
         return newImage
     }
     
-    private func mergeImageForVE3(_ image: UIImage, _ secondImage: UIImage) -> UIImage {
+    func mergeImageForVE3(_ image: UIImage, _ secondImage: UIImage) -> UIImage {
         let topImage = image
         let bottomImage = secondImage
         
@@ -75,7 +74,7 @@ class ImagesProcessing {
         return newImage
     }
     
-    private func cropImage(_ inputImage: UIImage, rawImage: UIImage) -> CIImage? {
+    func cropImage(_ inputImage: UIImage, rawImage: UIImage) -> CIImage? {
         let sourceImage = inputImage
         let rawHeight = rawImage.size.height
         let rawWidth = rawImage.size.height
@@ -87,18 +86,18 @@ class ImagesProcessing {
             sourceImage.size.width,
             sourceImage.size.height
         )
-
+        
         let sourceSize = sourceImage.size
         let xOffset = (sourceSize.width - sideLength) - heightReduction
         let yOffset = (sourceSize.height - sideLength) - widthReduction
-
+        
         let cropRect = CGRect(
             x: xOffset,
             y: yOffset,
             width: sideLength,
             height: sideLength
         ).integral
-
+        
         let sourceCGImage = sourceImage.cgImage!
         let croppedCGImage = sourceCGImage.cropping(
             to: cropRect
@@ -106,35 +105,17 @@ class ImagesProcessing {
         return CIImage(cgImage: croppedCGImage)
     }
     
-    private func createMask(_ image: UIImage) -> CIImage? {
+    func createMask(_ image: UIImage) -> CIImage? {
         let config = MLModelConfiguration()
         config.computeUnits = .all
         let model = try! segmentation_8bit()
-        let uikitImage = image
-        let staticImage = CIImage(image: uikitImage)
-        
-        var pixelBuffer: CVPixelBuffer?
-        let attrs = [kCVPixelBufferCGImageCompatibilityKey: kCFBooleanTrue,
-             kCVPixelBufferCGBitmapContextCompatibilityKey: kCFBooleanTrue] as CFDictionary
-        let width:Int = Int(uikitImage.size.width)
-        
-        let height:Int = Int(uikitImage.size.height)
-        
-        CVPixelBufferCreate(kCFAllocatorDefault,
-                            width,
-                            height,
-                            kCVPixelFormatType_32BGRA,
-                            attrs,
-                            &pixelBuffer)
-        let context = CIContext()
-        context.render(staticImage!, to: pixelBuffer!)
-        
+        let pixelBuffer = image.createPixelBuffer()
         guard let prediction = try? model.prediction(img: pixelBuffer!) else { return nil }
         let maskImage = CIImage(cvPixelBuffer: prediction.var_2274)
         return maskImage
     }
     
-    private func applyMask(maskImage: CIImage, pixelBuffer: CVPixelBuffer) -> UIImage? {
+    func applyMask(maskImage: CIImage, pixelBuffer: CVPixelBuffer) -> UIImage? {
         let ciImage = maskImage
         
         let context = CIContext(options: nil)
@@ -167,157 +148,119 @@ class ImagesProcessing {
         return cropMask
     }
     
+    func createMasksWithAnySize(_ images: [UIImage], indexs: [Int]) async -> [Int:CIImage] {
+        var result = [Int: CIImage]()
+        var mergeImages = [UIImage]()
+        var resizeImages = [UIImage]()
+        var resizeMaskImages = [UIImage]()
+        var masks = [CIImage]()
+        var resizeMasks = [CIImage]()
+        
+        await withTaskGroup(of: UIImage.self, body: { group in
+            for image in images {
+                group.addTask { [self] in
+                    return mergeImage(image, nil)
+                }
+            }
+            for await image in group {
+                mergeImages.append(image)
+            }
+        })
+
+        await withTaskGroup(of: UIImage.self, body: { group in
+            for image in mergeImages {
+                group.addTask {
+                    return image.resizeImage(targetSize: CGSize(width: 1024, height: 1024))!
+                }
+            }
+            for await image in group {
+                resizeImages.append(image)
+            }
+        })
+        
+        await withTaskGroup(of: CIImage.self, body: { group in
+            for image in resizeImages {
+                group.addTask(operation: { [self] in
+                    createMask(image)!
+                })
+            }
+            for await image in group {
+                masks.append(image)
+            }
+        })
+      
+        await withTaskGroup(of: UIImage.self, body: { group in
+            for index in 0..<masks.count {
+                let image = masks[index]
+                let size = mergeImages[index].size
+                group.addTask(operation: {
+                    UIImage(ciImage: image).resizeImage(targetSize: size)!
+                })
+            }
+            for await image in group {
+                resizeMaskImages.append(image)
+            }
+        })
+       
+        await withTaskGroup(of: CIImage.self, body: { group in
+            for index in 0..<masks.count {
+                let image = resizeMaskImages[index]
+                let rawImage = images[index]
+                group.addTask(operation: { [self] in
+                    return cropImage(image, rawImage: rawImage)!
+                })
+            }
+            for await image in group {
+                resizeMasks.append(image)
+            }
+        })
+      
+        for index in 0..<indexs.count {
+            result[indexs[index]] = resizeMasks[index]
+        }
+       
+        return result
+    }
+    
+    
     func applyMaskWithAnySize(image: UIImage, mask: CIImage)-> UIImage? {
         guard let pixelB = image.createPixelBuffer() else { return nil }
         guard let resultImage = applyMask(maskImage: mask, pixelBuffer: pixelB) else { return nil }
         return resultImage
     }
     
-    private func visualEffect1(_ pastImage: UIImage, currentImage: UIImage) -> [UIImage]? {
-        var result = [UIImage]()
-        let image = currentImage
-        guard let mask = createMaskWithAnySize(image: image) else { return nil }
-        guard let resultImage = applyMaskWithAnySize(image: image, mask: mask) else { return nil }
-        result.append(mergeImage(resultImage, pastImage))
-        result.append(image)
-        return result
-    }
-    
-    private func visualEffect2(_ pastImage: UIImage, currentImage: UIImage) -> [UIImage]? {
-        var result = [UIImage]()
-        guard let mask = createMaskWithAnySize(image: currentImage) else { return nil }
-        guard let firstImageWithMask = applyMaskWithAnySize(image: currentImage, mask: mask) else { return nil }
-        guard let secondImageWithMask = applyMaskWithAnySize(image: pastImage, mask: mask) else { return nil }
-        
-        result.append(mergeImage(firstImageWithMask, pastImage))
-        
-        let imageForMerge = mergeImage(secondImageWithMask, currentImage)
-        result.append(mergeImageForVE2(firstImageWithMask, imageForMerge))
-        
-        result.append(currentImage)
-        
-        return result
-    }
-    
-    private func visualEffect3(_ pastImage: UIImage, currentImage: UIImage) -> [UIImage]? {
-        var result = [UIImage]()
-        
-        guard let mask = createMaskWithAnySize(image: currentImage) else { return nil }
-        guard let imageWithMask = applyMaskWithAnySize(image: currentImage, mask: mask) else { return nil }
-        
-        let imageVMWidth = imageWithMask.size.width
-        let imageVMHeight = imageWithMask.size.height
-        
-        let targetSizeForImage = CGSize(width: imageVMWidth * 1.1, height: imageVMHeight * 1.1)
-        guard let resizeImage = imageWithMask.resizeImage(targetSize: targetSizeForImage) else { return nil }
-        
-        guard let secondImageWithMask = applyMaskWithAnySize(image: pastImage, mask: mask) else { return nil }
-        
-        let imageForMerge = mergeImage(secondImageWithMask, currentImage)
-        result.append(mergeImageForVE3(resizeImage, pastImage))
-        result.append(mergeImageForVE3(resizeImage, imageForMerge))
-        result.append(currentImage)
-
-        return result
-    }
-    
-    private func visualEffect4(_ pastImage: UIImage, currentImage: UIImage) -> [UIImage]? {
-        var result = [UIImage]()
-        
-        guard let mask = createMaskWithAnySize(image: currentImage) else { return nil }
-       
-        guard let pastImageWithMask = applyMaskWithAnySize(image: pastImage, mask: mask) else { return nil }
-        
-        let imageVMWidth = pastImageWithMask.size.width
-        let imageVMHeight = pastImageWithMask.size.height
-        
-        let targetSizeForImage = CGSize(width: imageVMWidth * 1.6, height: imageVMHeight * 1.6)
-        
-        guard let bigMask = UIImage(ciImage: mask).resizeImage(targetSize: targetSizeForImage) else { return nil }
-        let ciBM = CIImage(cgImage: bigMask.cgImage!)
-        guard let pastImageWithBigMask = applyMaskWithAnySize(image: pastImage, mask: ciBM) else { return nil }
-        
-        result.append(mergeImageForVE3(pastImageWithBigMask, currentImage))
-        result.append(mergeImageForVE3(pastImageWithMask, currentImage))
-        result.append(currentImage)
-        
-      return result
-    }
-    
-    private func visualEffect5(_ pastImage: UIImage, currentImage: UIImage) -> [UIImage]? {
-        var result = [UIImage]()
-        
-        guard let mask = createMaskWithAnySize(image: currentImage) else { return nil }
-        guard let pastImageWithMasc = applyMaskWithAnySize(image: pastImage, mask: mask) else { return nil }
-        
-        let imageVMWidth = pastImageWithMasc.size.width
-        let imageVMHeight = pastImageWithMasc.size.height
-        
-        let targetSizeForImage = CGSize(width: imageVMWidth * 1.2, height: imageVMHeight * 1.2)
-        guard let resizeImage = pastImageWithMasc.resizeImage(targetSize: targetSizeForImage) else { return nil }
-        
-        let currentImageWithMask = applyMaskWithAnySize(image: currentImage, mask: mask)!
-        let imageForMerge = mergeImageForVE3(pastImageWithMasc, currentImage).rotate(radians: -0.1)!
-        result.append(mergeImageForVE3(resizeImage, currentImage).rotate(radians: -0.1)!)
-        result.append(imageForMerge)
-        result.append(mergeImageForVE3(currentImageWithMask, imageForMerge))
-        result.append(currentImage)
-        
-      return result
-    }
-    
-    
     func createAnArrayOfImages(array: [ImageAndEffect]) async -> [UIImage]? {
         var result = [UIImage]()
         
-        for (index, imageAndEffect) in array.enumerated() {
-            switch  imageAndEffect.effect {
-                
-            case .not:
-                guard let image = UIImage(named: imageAndEffect.nameImage) else { return nil }
-                result.append(image)
-                
-            case .visualEffect1:
-                guard index != 0 else { return nil }
-                guard let image = UIImage(named: imageAndEffect.nameImage) else { return nil }
-                let previousImageName = "\(index)"
-                guard let first = UIImage(named: previousImageName) else { return nil }
-                guard let visualEffect = visualEffect1(first, currentImage: image) else { return nil }
-                result += visualEffect
-                
-            case .visualEffect2:
-                guard index != 0 else { return nil }
-                guard let image = UIImage(named: imageAndEffect.nameImage) else { return nil }
-                let previousImageName = "\(index)"
-                guard let first = UIImage(named: previousImageName) else { return nil }
-                guard let visualEffect = visualEffect2(first, currentImage: image) else { return nil }
-                result += visualEffect
-                
-            case .visualEffect3:
-                guard index != 0 else { return nil }
-                guard let image = UIImage(named: imageAndEffect.nameImage) else { return nil }
-                let previousImageName = "\(index)"
-                guard let first = UIImage(named: previousImageName) else { return nil }
-                guard let visualEffect = visualEffect3(first, currentImage: image) else { return nil }
-                result += visualEffect
-                
-            case .visualEffect4:
-                guard index != 0 else { return nil }
-                guard let image = UIImage(named: imageAndEffect.nameImage) else { return nil }
-                let previousImageName = "\(index)"
-                guard let first = UIImage(named: previousImageName) else { return nil }
-                guard let visualEffect = visualEffect4(first, currentImage: image) else { return nil }
-                result += visualEffect
-                
-            case .visualEffect5:
-                guard index != 0 else { return nil }
-                guard let image = UIImage(named: imageAndEffect.nameImage) else { return nil }
-                let previousImageName = "\(index)"
-                guard let first = UIImage(named: previousImageName) else { return nil }
-                guard let visualEffect = visualEffect5(first, currentImage: image) else { return nil }
-                result += visualEffect
+        await withTaskGroup(of: (Int, [UIImage]?).self) { group in
+            var images = [UIImage]()
+            var indexs = [Int]()
+            for (index, imageAndEffect) in array.enumerated() {
+                if imageAndEffect.effect != .not {
+                    images.append(UIImage(imageLiteralResourceName: imageAndEffect.nameImage))
+                    indexs.append(index)
+                }
+            }
+            let masks = await createMasksWithAnySize(images, indexs: indexs)
+            
+            for (index, imageAndEffect) in array.enumerated() {
+                group.addTask {
+                    if imageAndEffect.effect != .not {
+                        return (index, imageAndEffect.effect.process(imageAndEffect,
+                                                                     index: index,
+                                                                     mask: masks[index]!))
+                    } else {
+                        return (index, imageAndEffect.effect.process(imageAndEffect,
+                                                                     index: index,
+                                                                     mask: nil))
+                    }
+                }
+            }
+            for await (_, images) in group {
+                result += images!
             }
         }
+        
         return result.reversed()
     }
 }
